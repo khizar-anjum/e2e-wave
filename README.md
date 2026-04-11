@@ -18,6 +18,8 @@ e2e-wave/
 │   ├── python_replicate/    # Differentiable OFDM + Watermark channel replay
 │   └── pairwise_lambda.py   # LambdaNDCG loss used by the waveform bank
 ├── training/
+│   ├── train_vqvae.py                          # VideoGPT VQ-VAE backbone training
+│   ├── test_vqvae.py                           # VQ-VAE sanity eval
 │   └── train_wave_bank_watermark_videogpt_full.py
 ├── eval/
 │   ├── e2e_wave/            # Wavebank eval (PSNR / SSIM / L2)
@@ -111,6 +113,22 @@ pre-computed CSVs** in this repo — rerun them against the UVE-38K test set
 
 Then rerun `figures/consolidate_runs.py` to pick them up into the manifest.
 `figures/plot_psnr_ssim.py` will include them automatically.
+
+## Training a new VQ-VAE backbone
+
+The VQ-VAE checkpoint we ship under `checkpoints/vqvae/` was trained with
+`training/train_vqvae.py` on the UVE-38K corpus at 128×128 resolution with a
+1024-entry codebook (4×16×16 latent). To reproduce it from scratch:
+
+```bash
+python training/train_vqvae.py \
+    --data_path /path/to/uve38k/train \
+    --resolution 128 --n_codes 1024 \
+    --output_dir runs/vqvae_41616_128x128
+```
+
+See the script's `--help` for the full argument list. `training/test_vqvae.py`
+runs a quick reconstruction sanity check on a trained checkpoint.
 
 ## Training a new waveform bank
 
