@@ -29,3 +29,6 @@ videos/
 
 # Keep the committed checkpoint dirs but ignore ad-hoc ones
 runs_backup/
+
+# User-local env override (see scripts/env.example.sh)
+env.sh

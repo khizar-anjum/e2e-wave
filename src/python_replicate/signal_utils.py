@@ -65,6 +65,9 @@ def upfirdn_torch(
         upsampled[::up] = x_complex.reshape(-1)
     else:
         upsampled = x_complex.reshape(-1)
+    # Filter h is expected to be real; if complex, take real part explicitly
+    if h.is_complex():
+        h = h.real
     h = h.to(dtype=torch.float64, device=x.device)
     kernel = torch.flip(h, dims=(0,)).view(1, 1, -1)
     y_real = F.conv1d(

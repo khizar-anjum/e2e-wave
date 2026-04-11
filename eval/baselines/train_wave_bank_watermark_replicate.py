@@ -8,24 +8,14 @@ import random
 import warnings
 import numpy as np
 from datetime import datetime
-from typing import List, Tuple
-import sys
 from pathlib import Path
-import matplotlib.pyplot as plt
-import io
-import torchvision
-
-# Ensure repo root and VideoGPT Implementation dir are on sys.path
-repo_root = Path(__file__).resolve().parents[1]
-vid_root = Path(__file__).resolve().parent
-for p in (repo_root, vid_root):
-    if str(p) not in sys.path:
-        sys.path.insert(0, str(p))
+from typing import List, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchmetrics
+from OmniTokenizer import OmniTokenizer_VQGAN
 from pairwise_lambda import LambdaNDCGLoss2
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
@@ -37,9 +27,6 @@ from python_replicate.frame_preparation import FramePrepConfig
 from python_replicate.ofdm_mapper import OFDMConfig
 from python_replicate.waveform_bank import ComplexWaveformSystem
 
-# VideoGPT loader
-from videogpt.train_utils import load_model as videogpt_load_model
-
 
 # ---------------------------------------------------------------------
 # Configuration
@@ -47,41 +34,31 @@ from videogpt.train_utils import load_model as videogpt_load_model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 COMM_DEVICE = device
 ACCEL_DEVICE = device
-NUM_TOKENS = 1024  # will be overwritten by loaded VideoGPT codebook size
-FRAME_SEQ_LEN = 16  # will be overridden by checkpoint input_shape if present
-WAVEFORM_LEN = 9
+NUM_TOKENS = 8192
+FRAME_SEQ_LEN = 17
+WAVEFORM_LEN = 40
 BATCH_SIZE_TRAIN = 8
 VAL_BATCH_SIZE = 4
 LR = 1e-3
-USE_LAMBDA_LOSS = False  # if False, use cross-entropy with relevance as soft labels
-CE_TARGET_TEMPERATURE = 0.01  # temperature applied to relevance before softmax for CE targets
-TOP_K_TARGETS = 5  # number of most relevant tokens used in the target distribution
-MIMIC_EVAL_TOKEN_GRID = True
-PLOT_MAX_SAMPLES = 8
-NUM_EPOCHS = 50
-VAL_FREQ = 10
+NUM_EPOCHS = 100
+VAL_FREQ = 1
 TRAIN_SNR_RANGE = (0.0, 30.0)
-EVAL_SNR_RANGE = (15, 15.1)
+EVAL_SNR_RANGE = (0.0, 30.0)
 TRAIN_CHANNELS = ["NCS1"]
 EVAL_CHANNELS = ["NOF1"]
 CHANNEL_BASE = Path(os.environ.get("E2E_WAVE_CHANNELS_DIR", "data/channels"))
-TRAIN_RECORDING_MODE = "random"  # "first", "random", or "fixed"
-EVAL_RECORDING_MODE = "random"  # "first", "random", or "fixed"
-EVAL_RECORDING_SEED = 123
-MAX_RECORDINGS_PER_CHANNEL = 0  # 0 to use all recordings
 # Preamble/pilot controls
 TRAIN_LENGTH = 0  # set to 0 to drop the unused training segment
 PILOT_PERIOD = 4  # number of OFDM symbols per pilot block (1 pilot + rest data)
-VIDEO_RESOLUTION = 128
+VIDEO_RESOLUTION = 64
 VAL_MAX_LENGTH = 200
-LOG_DIR_BASE = Path(os.environ.get("E2E_WAVE_RUNS_DIR", "runs/watermark_videogpt"))
+LOG_DIR_BASE = Path(os.environ.get("E2E_WAVE_RUNS_DIR", "runs/watermark_replicate"))
 VIS_FPS = 4
 SIMILARITY_METRIC = "l2" # "dot", "si_l2", or "mlp"
 TRAIN_USE_AWGN = True
 TRAIN_FLAT_CHANNEL = False
 EVAL_USE_AWGN = True
 EVAL_FLAT_CHANNEL = False
-USE_SYNTHETIC_VAL = False  # if False, use real video dataset for validation
 
 
 # ---------------------------------------------------------------------
@@ -94,7 +71,6 @@ def preprocess(
     in_channels: int = 3,
     sample_every_n_frames: int = 1,
 ) -> torch.Tensor:
-    # Match VideoGPT preprocessing: resize/crop to resolution, center crop for eval, normalize to [-0.5, 0.5]
     if in_channels == 3:
         video = video.permute(0, 3, 1, 2).contiguous().float() / 255.0
     else:
@@ -107,19 +83,17 @@ def preprocess(
             .float()
         )
 
-    # Trim or pad (repeat) to sequence_length
     t, c, h, w = video.shape
     if sequence_length <= t:
         video = video[:sequence_length]
     else:
-        reps = (sequence_length + t - 1) // t
-        video = video.repeat(reps, 1, 1, 1)
+        while video.shape[0] < sequence_length:
+            video = torch.cat([video, video], dim=0)
         video = video[:sequence_length]
 
     if sample_every_n_frames > 1:
         video = video[::sample_every_n_frames]
 
-    # Resize keeping aspect ratio, then center crop
     scale = resolution / min(h, w)
     if h < w:
         target_size = (resolution, math.ceil(w * scale))
@@ -128,11 +102,11 @@ def preprocess(
     video = F.interpolate(video, size=target_size, mode="bilinear", align_corners=False)
 
     t, c, h, w = video.shape
-    w_start = max((w - resolution) // 2, 0)
-    h_start = max((h - resolution) // 2, 0)
+    w_start = (w - resolution) // 2
+    h_start = (h - resolution) // 2
     video = video[:, :, h_start : h_start + resolution, w_start : w_start + resolution]
-    video = video.permute(1, 0, 2, 3).contiguous()  # (C, T, H, W)
-    video = video - 0.5  # normalize to [-0.5, 0.5] like VideoGPT dataset.py
+    video = video.permute(1, 0, 2, 3).contiguous()
+    video = (video - 0.5) * 2.0
     return video
 
 
@@ -140,9 +114,6 @@ def _parent_dir(path: str) -> str:
     return osp.basename(osp.dirname(path))
 
 
-# ---------------------------------------------------------------------
-# Video dataset (unchanged)
-# ---------------------------------------------------------------------
 class VideoDataset(Dataset):
     exts = ["avi", "mp4", "webm", "mov"]
 
@@ -181,7 +152,6 @@ class VideoDataset(Dataset):
                 metadata = pickle.load(f)
             clips = VideoClips(files, sequence_length, _precomputed_metadata=metadata)
         self._clips = clips
-        self.train = train
 
     def __len__(self) -> int:
         total = self._clips.num_clips()
@@ -191,10 +161,7 @@ class VideoDataset(Dataset):
 
     def __getitem__(self, idx: int):
         if self.max_length is not None:
-            if self.train or idx >= self._clips.num_clips():
-                idx = random.randint(0, self._clips.num_clips() - 1)
-            elif not self.train:
-                idx = idx % self._clips.num_clips()
+            idx = random.randint(0, self._clips.num_clips() - 1)
         while True:
             try:
                 video, _, _, video_idx = self._clips.get_clip(idx)
@@ -212,20 +179,14 @@ class VideoDataset(Dataset):
 
 
 class CodebookIndexDataset(Dataset):
-    def __init__(
-        self, num_tokens: int = NUM_TOKENS, token_shape: Tuple[int, ...] = ()
-    ) -> None:
-        self.num_tokens = num_tokens
-        self.token_shape = tuple(token_shape) if token_shape else ()
+    def __init__(self, num_tokens: int = NUM_TOKENS) -> None:
+        self.indices = torch.arange(num_tokens, dtype=torch.long)
 
     def __len__(self) -> int:
-        # Keep the synthetic dataset length modest so the number of batches matches expectations
-        return self.num_tokens
+        return self.indices.numel()
 
     def __getitem__(self, idx: int) -> torch.Tensor:
-        # Return random token ids, optionally as a spatial grid.
-        shape = self.token_shape if self.token_shape else ()
-        return torch.randint(0, self.num_tokens, shape, dtype=torch.long)
+        return self.indices[idx]
 
 
 # ---------------------------------------------------------------------
@@ -252,30 +213,16 @@ def make_grid_video(real: torch.Tensor, recon: torch.Tensor) -> torch.Tensor:
     return combined
 
 
-def make_grid_video_triplet(
-    real: torch.Tensor, recon: torch.Tensor, perfect: torch.Tensor
-) -> torch.Tensor:
-    real = (real.detach().cpu() + 1) * 0.5
-    recon = (recon.detach().cpu() + 1) * 0.5
-    perfect = (perfect.detach().cpu() + 1) * 0.5
-    real = real.clamp(0, 1)
-    recon = recon.clamp(0, 1)
-    perfect = perfect.clamp(0, 1)
-    combined = torch.cat([real, recon, perfect], dim=4)
-    combined = combined.permute(0, 2, 1, 3, 4)
-    return combined
-
-
 # ---------------------------------------------------------------------
 # Trainer
 # ---------------------------------------------------------------------
 class WatermarkBankTrainer(nn.Module):
-    def __init__(self, fixed_relevance: torch.Tensor, num_tokens: int) -> None:
+    def __init__(self, fixed_relevance: torch.Tensor) -> None:
         super().__init__()
         self.comm = ComplexWaveformSystem(
-            num_tokens=num_tokens,
+            num_tokens=NUM_TOKENS,
             output_seq_len=WAVEFORM_LEN,
-            use_temperature=True,
+            use_temperature=False,
             similarity_mode=SIMILARITY_METRIC,
         ).to(COMM_DEVICE)
         self.lambda_loss = LambdaNDCGLoss2(sigma=1.0)
@@ -288,8 +235,6 @@ class WatermarkBankTrainer(nn.Module):
             frame_config=self.frame_config,
             ofdm_config=self.ofdm_config,
             device=COMM_DEVICE,
-            recording_mode=TRAIN_RECORDING_MODE,
-            max_recordings=MAX_RECORDINGS_PER_CHANNEL,
         )
         self.eval_channels = ChannelCollection(
             EVAL_CHANNELS,
@@ -297,9 +242,6 @@ class WatermarkBankTrainer(nn.Module):
             frame_config=self.frame_config,
             ofdm_config=self.ofdm_config,
             device=COMM_DEVICE,
-            recording_mode=EVAL_RECORDING_MODE,
-            recording_seed=EVAL_RECORDING_SEED,
-            max_recordings=MAX_RECORDINGS_PER_CHANNEL,
         )
 
     def _pad_to_len(self, waveform: torch.Tensor) -> torch.Tensor:
@@ -319,7 +261,7 @@ class WatermarkBankTrainer(nn.Module):
         sim_result,
         frame_idx: int,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        pipeline = channel_collection.get_pipeline(channel_name, sim_result)
+        pipeline = channel_collection.pipelines[channel_name]
         rx_sequences = pipeline.recover_data_sequences(sim_result, equalize=True)
         tx_frame = sim_result.tx_waveforms[frame_idx]
         if tx_frame.numel() == 0:
@@ -383,7 +325,7 @@ class WatermarkBankTrainer(nn.Module):
             add_awgn=TRAIN_USE_AWGN,
             flat_channel=TRAIN_FLAT_CHANNEL,
         )
-        pipeline = self.train_channels.get_pipeline(channel_name, result)
+        pipeline = self.train_channels.pipelines[channel_name]
         rx_sequences = pipeline.recover_data_sequences(result, equalize=True)
         channel_meta = {
             "V0": float(getattr(pipeline.channel, "V0", 0.0)),
@@ -403,9 +345,8 @@ class WatermarkBankTrainer(nn.Module):
 
         rx_features: List[torch.Tensor] = []
         tx_refs: List[torch.Tensor] = []
-        targets: List[torch.Tensor] = []
+        targets: List[int] = []
         mse_terms: List[torch.Tensor] = []
-        snr_per_token: List[torch.Tensor] = []
 
         for frame_idx, (rx_frame, tx_frame) in enumerate(
             zip(rx_sequences, result.tx_waveforms)
@@ -416,100 +357,43 @@ class WatermarkBankTrainer(nn.Module):
             rx_waveform = rx_frame.reshape(-1, self.comm.output_seq_len)
             if rx_waveform.numel() == 0:
                 continue
-            frame_targets = indices[frame_idx].reshape(-1).to(
-                device=COMM_DEVICE, dtype=torch.long
+            tx_vec = tx_waveform[0].to(COMM_DEVICE, dtype=self.comm.get_waveforms().dtype)
+            rx_vec = rx_waveform[0].to(COMM_DEVICE, dtype=self.comm.get_waveforms().dtype)
+            rx_vec = self.comm.normalize_power(rx_vec.unsqueeze(0)).squeeze(0)
+            tx_vec = self.comm.normalize_power(tx_vec.unsqueeze(0)).squeeze(0)
+            rx_vec = self._pad_to_len(rx_vec)
+            tx_vec = self._pad_to_len(tx_vec)
+            rx_features.append(rx_vec)
+            tx_refs.append(tx_vec)
+            targets.append(indices[frame_idx].item())
+            mse_terms.append(
+                F.mse_loss(torch.view_as_real(rx_vec), torch.view_as_real(tx_vec))
             )
-            num_tokens = frame_targets.numel()
-            if num_tokens == 0:
-                continue
-            if tx_waveform.shape[0] < num_tokens:
-                pad = torch.zeros(
-                    num_tokens - tx_waveform.shape[0],
-                    self.comm.output_seq_len,
-                    dtype=tx_waveform.dtype,
-                    device=tx_waveform.device,
-                )
-                tx_waveform = torch.cat([tx_waveform, pad], dim=0)
-            if rx_waveform.shape[0] < num_tokens:
-                pad = torch.zeros(
-                    num_tokens - rx_waveform.shape[0],
-                    self.comm.output_seq_len,
-                    dtype=rx_waveform.dtype,
-                    device=rx_waveform.device,
-                )
-                rx_waveform = torch.cat([rx_waveform, pad], dim=0)
-            tx_vecs = tx_waveform[:num_tokens].to(
-                COMM_DEVICE, dtype=self.comm.get_waveforms().dtype
-            )
-            rx_vecs = rx_waveform[:num_tokens].to(
-                COMM_DEVICE, dtype=self.comm.get_waveforms().dtype
-            )
-            rx_vecs = self.comm.normalize_power(rx_vecs)
-            tx_vecs = self.comm.normalize_power(tx_vecs)
-            rx_features.append(rx_vecs)
-            tx_refs.append(tx_vecs)
-            targets.append(frame_targets)
-            per_token_mse = F.mse_loss(
-                torch.view_as_real(rx_vecs),
-                torch.view_as_real(tx_vecs),
-                reduction="none",
-            ).mean(dim=-1).mean(dim=-1)
-            mse_terms.append(per_token_mse)
-            snr_per_token.append(snrs[frame_idx].repeat(num_tokens))
 
         if not rx_features:
             raise RuntimeError("All training samples failed through the channel.")
 
-        rx_batch = torch.cat(rx_features, dim=0)
-        tx_batch = torch.cat(tx_refs, dim=0)
+        rx_batch = torch.stack(rx_features, dim=0)
+        tx_batch = torch.stack(tx_refs, dim=0)
         bank = self.comm.normalize_power(self.comm.get_waveforms())
         ref_bank = bank.detach() if detach_reference else bank
         scores = self.comm.compute_similarity(
             rx_batch, ref_bank, metric=SIMILARITY_METRIC
         )
-        target_tensor = torch.cat(targets, dim=0)
+        target_tensor = torch.tensor(targets, dtype=torch.long, device=COMM_DEVICE)
         relevance = torch.index_select(self.fixed_relevance, 0, target_tensor)
         counts = torch.full(
             (scores.shape[0],), NUM_TOKENS, dtype=torch.long, device=COMM_DEVICE
         )
-        k = min(TOP_K_TARGETS, relevance.shape[1])
-        topk_vals, topk_idx = torch.topk(relevance, k=k, dim=1)
-        topk_weights = torch.softmax(topk_vals / CE_TARGET_TEMPERATURE, dim=1)
-        soft_targets = torch.zeros_like(relevance)
-        soft_targets.scatter_(1, topk_idx, topk_weights)
-        pred_probs = torch.softmax(scores, dim=1)
-        if USE_LAMBDA_LOSS:
-            loss = self.lambda_loss(scores, relevance, counts).mean()
-        else:
-            loss = -(soft_targets * F.log_softmax(scores, dim=1)).sum(dim=1).mean()
-        mse_value = torch.cat(mse_terms, dim=0).mean()
+        loss = self.lambda_loss(scores, relevance, counts).mean()
+        mse_value = torch.stack(mse_terms).mean()
         cos_sim = self._complex_cos_similarity(rx_batch, tx_batch).mean()
         pred = torch.argmax(scores, dim=-1)
         token_acc = (pred == target_tensor).float().mean()
-        topk_k = min(TOP_K_TARGETS, scores.shape[1])
-        topk_idx = torch.topk(scores, k=topk_k, dim=1).indices
-        topk_acc = (topk_idx == target_tensor.unsqueeze(1)).any(dim=1).float().mean()
         pred_waves = bank.index_select(0, pred)
         target_waves = bank.index_select(0, target_tensor)
         token_l2 = (pred_waves - target_waves).pow(2).sum(dim=-1).mean().real
-        return {
-            "loss": loss,
-            "mse": mse_value,
-            "cos_sim": cos_sim,
-            "token_acc": token_acc,
-            "topk_acc": topk_acc,
-            "token_l2": token_l2,
-            "channel_name": channel_name,
-            "channel_meta": channel_meta,
-            "scores_mean": scores.mean().detach(),
-            "scores_std": scores.std().detach(),
-            "pred_hist": torch.bincount(pred, minlength=bank.shape[0]).float() / max(pred.numel(), 1),
-            "targets": target_tensor.detach(),
-            "preds": pred.detach(),
-            "soft_targets": soft_targets.detach(),
-            "pred_probs": pred_probs.detach(),
-            "snrs": torch.cat(snr_per_token, dim=0).detach(),
-        }
+        return loss, mse_value, cos_sim, token_acc, token_l2, channel_name, channel_meta
 
     def simulate_sequence_features(
         self,
@@ -530,7 +414,7 @@ class WatermarkBankTrainer(nn.Module):
             add_awgn=add_awgn,
             flat_channel=flat_channel,
         )
-        pipeline = channel_collection.get_pipeline(channel_name, result)
+        pipeline = channel_collection.pipelines[channel_name]
         rx_sequences = pipeline.recover_data_sequences(result, equalize=True)
         rx_list: List[torch.Tensor] = []
         counts: List[int] = []
@@ -594,7 +478,7 @@ class WatermarkBankTrainer(nn.Module):
             add_awgn=add_awgn,
             flat_channel=flat_channel,
         )
-        pipeline = channel_collection.get_pipeline(channel_name, result)
+        pipeline = channel_collection.pipelines[channel_name]
         rx_sequences = pipeline.recover_data_sequences(result, equalize=True)
 
         outputs: List[Tuple[torch.Tensor, torch.Tensor, List[int]]] = []
@@ -638,52 +522,29 @@ class WatermarkBankTrainer(nn.Module):
 def run_validation(
     epoch: int,
     trainer: WatermarkBankTrainer,
-    vqvae_model,
+    omni_model: OmniTokenizer_VQGAN,
     val_loader: DataLoader,
     writer: SummaryWriter,
 ) -> Tuple[float, float]:
     trainer.eval()
-    vqvae_model.eval()
+    omni_model.eval()
     psnr_metric = torchmetrics.image.PeakSignalNoiseRatio(data_range=1.0).to(ACCEL_DEVICE)
     ssim_metric = torchmetrics.image.StructuralSimilarityIndexMeasure(data_range=1.0).to(
         ACCEL_DEVICE
     )
-    psnr_metric_perfect = torchmetrics.image.PeakSignalNoiseRatio(data_range=1.0).to(
-        ACCEL_DEVICE
-    )
-    ssim_metric_perfect = torchmetrics.image.StructuralSimilarityIndexMeasure(data_range=1.0).to(
-        ACCEL_DEVICE
-    )
     bank = trainer.comm.normalize_power(trainer.comm.get_waveforms())
     total_token_acc = 0.0
-    total_topk_acc = 0.0
     total_token_l2 = 0.0
     total_psnr = 0.0
     total_ssim = 0.0
-    total_psnr_perfect = 0.0
-    total_ssim_perfect = 0.0
     total_samples = 0
     total_symbol_batches = 0
     logged_video = False
 
     for batch in tqdm(val_loader, desc="Eval"):
-        # If using synthetic val loader, batch is tensor of token ids
-        if isinstance(batch, dict):
-            video = batch["video"].to(ACCEL_DEVICE)
-            video_bcthw = video
-            _, encodings = vqvae_model.encode(video_bcthw, no_flatten=True)
-            indices = encodings.squeeze(-1)  # (b, t', h', w')
-            B = video.shape[0]
-        else:
-            # Synthetic tokens
-            token_batch = batch.to(COMM_DEVICE)
-            B = token_batch.shape[0]
-            if token_batch.dim() == 1:
-                indices = token_batch.view(B, 1, 1, 1)
-            else:
-                indices = token_batch.unsqueeze(1)
-            # Dummy video tensors for metrics (skip PSNR/SSIM)
-            video = None
+        video = batch["video"].to(ACCEL_DEVICE)
+        indices = omni_model.encode(video, is_image=False)
+        B = video.shape[0]
         snrs = torch.empty(B, device=COMM_DEVICE).uniform_(*EVAL_SNR_RANGE)
         frame_shape = indices.shape[2:]
 
@@ -705,14 +566,10 @@ def run_validation(
             pred_flat = torch.argmax(scores, dim=-1)
             target_tensor = targets.to(COMM_DEVICE)
             token_acc = (pred_flat == target_tensor).float().mean()
-            topk_k = min(TOP_K_TARGETS, scores.shape[1])
-            topk_idx = torch.topk(scores, k=topk_k, dim=1).indices
-            topk_acc = (topk_idx == target_tensor.unsqueeze(1)).any(dim=1).float().mean()
             pred_waves = bank.index_select(0, pred_flat)
             target_waves = bank.index_select(0, target_tensor)
             token_l2 = (pred_waves - target_waves).pow(2).sum(dim=-1).mean().real
             total_token_acc += token_acc.item()
-            total_topk_acc += topk_acc.item()
             total_token_l2 += token_l2.item()
             total_symbol_batches += 1
 
@@ -723,76 +580,41 @@ def run_validation(
                 frame_pred = frame_pred.view(frame_shape)
                 predicted_frames.append(frame_pred)
                 cursor += count
-            if video is not None:
-                pred_indices = torch.stack(predicted_frames, dim=0).unsqueeze(0).to(ACCEL_DEVICE)
-                recon = vqvae_model.decode(pred_indices.unsqueeze(-1))
-                perfect_recon = vqvae_model.decode(indices[b : b + 1].unsqueeze(-1))
-                real = video[b : b + 1]
+            pred_indices = torch.stack(predicted_frames, dim=0).unsqueeze(0).to(ACCEL_DEVICE)
+            recon = omni_model.decode(pred_indices, is_image=False)
+            real = video[b : b + 1]
 
-                real_01 = ((real + 1) * 0.5).clamp(0, 1)
-                recon_01 = ((recon + 1) * 0.5).clamp(0, 1)
-                perfect_01 = ((perfect_recon + 1) * 0.5).clamp(0, 1)
-                real_frames = real_01.permute(0, 2, 1, 3, 4).reshape(
-                    -1, real_01.shape[1], real_01.shape[3], real_01.shape[4]
-                )
-                recon_frames = recon_01.permute(0, 2, 1, 3, 4).reshape(
-                    -1, recon_01.shape[1], recon_01.shape[3], recon_01.shape[4]
-                )
-                perfect_frames = perfect_01.permute(0, 2, 1, 3, 4).reshape(
-                    -1, perfect_01.shape[1], perfect_01.shape[3], perfect_01.shape[4]
-                )
-                # Align frame counts in case of mismatch
-                min_len = min(
-                    real_frames.shape[0],
-                    recon_frames.shape[0],
-                    perfect_frames.shape[0],
-                )
-                real_frames = real_frames[:min_len]
-                recon_frames = recon_frames[:min_len]
-                perfect_frames = perfect_frames[:min_len]
-                psnr_val = psnr_metric(recon_frames, real_frames)
-                ssim_val = ssim_metric(recon_frames, real_frames)
-                psnr_perfect = psnr_metric_perfect(perfect_frames, real_frames)
-                ssim_perfect = ssim_metric_perfect(perfect_frames, real_frames)
-                total_psnr += psnr_val.item()
-                total_ssim += ssim_val.item()
-                total_psnr_perfect += psnr_perfect.item()
-                total_ssim_perfect += ssim_perfect.item()
-                total_samples += 1
+            real_01 = ((real + 1) * 0.5).clamp(0, 1)
+            recon_01 = ((recon + 1) * 0.5).clamp(0, 1)
+            real_frames = real_01.permute(0, 2, 1, 3, 4).reshape(
+                -1, real_01.shape[1], real_01.shape[3], real_01.shape[4]
+            )
+            recon_frames = recon_01.permute(0, 2, 1, 3, 4).reshape(
+                -1, recon_01.shape[1], recon_01.shape[3], recon_01.shape[4]
+            )
+            psnr_val = psnr_metric(recon_frames, real_frames)
+            ssim_val = ssim_metric(recon_frames, real_frames)
+            total_psnr += psnr_val.item()
+            total_ssim += ssim_val.item()
+            total_samples += 1
 
-                if not logged_video:
-                    writer.add_video(
-                        "Eval/Reconstruction",
-                        make_grid_video_triplet(real, recon, perfect_recon),
-                        epoch,
-                        fps=VIS_FPS,
-                    )
-                    logged_video = True
+            if not logged_video:
+                writer.add_video(
+                    "Eval/Reconstruction", make_grid_video(real, recon), epoch, fps=VIS_FPS
+                )
+                logged_video = True
 
     avg_psnr = total_psnr / max(total_samples, 1)
     avg_ssim = total_ssim / max(total_samples, 1)
-    avg_psnr_perfect = total_psnr_perfect / max(total_samples, 1)
-    avg_ssim_perfect = total_ssim_perfect / max(total_samples, 1)
     avg_token_acc = total_token_acc / max(total_symbol_batches, 1)
-    avg_topk_acc = total_topk_acc / max(total_symbol_batches, 1)
     avg_token_l2 = total_token_l2 / max(total_symbol_batches, 1)
-    if total_samples > 0:
-        writer.add_scalar("Eval/PSNR", avg_psnr, epoch)
-        writer.add_scalar("Eval/SSIM", avg_ssim, epoch)
-        writer.add_scalar("Eval/PSNR_Perfect", avg_psnr_perfect, epoch)
-        writer.add_scalar("Eval/SSIM_Perfect", avg_ssim_perfect, epoch)
+    writer.add_scalar("Eval/PSNR", avg_psnr, epoch)
+    writer.add_scalar("Eval/SSIM", avg_ssim, epoch)
     writer.add_scalar("Eval/TokenAcc", avg_token_acc, epoch)
-    writer.add_scalar("Eval/TopKAcc", avg_topk_acc, epoch)
     writer.add_scalar("Eval/TokenL2", avg_token_l2, epoch)
-    print(
-        f"Epoch {epoch}: Eval PSNR={avg_psnr:.2f}, SSIM={avg_ssim:.4f}, "
-        f"Perfect PSNR={avg_psnr_perfect:.2f}, Perfect SSIM={avg_ssim_perfect:.4f}, "
-        f"TokenAcc={avg_token_acc:.3f}, TopKAcc={avg_topk_acc:.3f}"
-    )
+    print(f"Epoch {epoch}: Eval PSNR={avg_psnr:.2f}, SSIM={avg_ssim:.4f}, TokenAcc={avg_token_acc:.3f}")
     psnr_metric.reset()
     ssim_metric.reset()
-    psnr_metric_perfect.reset()
-    ssim_metric_perfect.reset()
     return avg_psnr, avg_ssim
 
 
@@ -812,157 +634,44 @@ def _create_run_dir(base_dir: Path, prefix: str = "") -> Path:
     return candidate
 
 
-def main(video_root: str, vqvae_ckpt: str, exp_prefix: str = "") -> None:
+def main(video_root: str, omni_ckpt: str, exp_prefix: str = "") -> None:
     log_dir = _create_run_dir(LOG_DIR_BASE, prefix=exp_prefix)
     writer = SummaryWriter(log_dir.as_posix())
 
-    print(f"Loading VideoGPT VQ-VAE checkpoint: {vqvae_ckpt}")
-    ckpt = torch.load(vqvae_ckpt, map_location=ACCEL_DEVICE)
-    cond_types = ckpt.get("hp", {}).get("cond_types", None)
-    vqvae_model, cfg = videogpt_load_model(
-        ckpt,
-        device=ACCEL_DEVICE,
-        freeze_model=True,
-        cond_types=cond_types,
-        foveated_loss=False,
-    )
-    vqvae_model = vqvae_model.to(ACCEL_DEVICE)
-    vqvae_model.eval()
+    print("Loading OmniTokenizer checkpoint...")
+    omni_model = OmniTokenizer_VQGAN.load_from_checkpoint(
+        omni_ckpt, strict=False, weights_only=False
+    ).to(ACCEL_DEVICE)
+    omni_model.eval()
+    codebook = omni_model.codebook.embeddings.detach().to(COMM_DEVICE)
+    relevance = compute_relevance_matrix(codebook)
 
-    # Adapt sequence length / resolution to the checkpoint config (VideoGPT typically uses 16-frame clips)
-    if "input_shape" in ckpt.get("hp", {}):
-        try:
-            # For this checkpoint, hp['input_shape'] is (T, H, W)
-            t_in, h_in, w_in = ckpt["hp"]["input_shape"]
-            global FRAME_SEQ_LEN, VIDEO_RESOLUTION
-            FRAME_SEQ_LEN = t_in
-            VIDEO_RESOLUTION = h_in
-            print(f"Using sequence length {FRAME_SEQ_LEN} and resolution {VIDEO_RESOLUTION} from checkpoint.")
-        except Exception:
-            pass
-
-    emb = vqvae_model.codebook.embeddings  # (n_codebooks, K, D); here n_codebooks=1
-    emb_flat = emb.reshape(-1, emb.shape[-1]).to(COMM_DEVICE)
-    global NUM_TOKENS
-    NUM_TOKENS = emb_flat.shape[0]
-    relevance = compute_relevance_matrix(emb_flat)
-
-    trainer = WatermarkBankTrainer(relevance, num_tokens=NUM_TOKENS)
+    trainer = WatermarkBankTrainer(relevance)
     optimizer = torch.optim.AdamW(trainer.parameters(), lr=LR, weight_decay=1e-4)
-    token_shape: Tuple[int, ...] = ()
-    if MIMIC_EVAL_TOKEN_GRID and hasattr(vqvae_model, "latent_shape"):
-        latent_shape = vqvae_model.latent_shape
-        if len(latent_shape) >= 4:
-            token_shape = (int(latent_shape[1]), int(latent_shape[2]))
-        elif len(latent_shape) == 3:
-            token_shape = (int(latent_shape[0]), int(latent_shape[1]))
-        if token_shape:
-            print(f"Using token grid {token_shape[0]}x{token_shape[1]} for training.")
     train_loader = DataLoader(
-        CodebookIndexDataset(num_tokens=NUM_TOKENS, token_shape=token_shape),
-        batch_size=BATCH_SIZE_TRAIN,
-        shuffle=True,
-        num_workers=0,
+        CodebookIndexDataset(), batch_size=BATCH_SIZE_TRAIN, shuffle=True, num_workers=0
     )
-    # Eval loader: switch between real video and synthetic token dataset
-    
-    if USE_SYNTHETIC_VAL:
-        val_loader = DataLoader(
-            CodebookIndexDataset(num_tokens=NUM_TOKENS, token_shape=token_shape),
-            batch_size=VAL_BATCH_SIZE,
-            shuffle=False,
-            num_workers=0,
-        )
-    else:
-        val_loader = DataLoader(
-            VideoDataset(
-                video_root,
-                sequence_length=FRAME_SEQ_LEN,
-                train=False,
-                resolution=VIDEO_RESOLUTION,
-                max_length=VAL_MAX_LENGTH,
-            ),
-            batch_size=VAL_BATCH_SIZE,
-            shuffle=False,
-            num_workers=4,
-        )
+    val_loader = DataLoader(
+        VideoDataset(
+            video_root,
+            sequence_length=FRAME_SEQ_LEN,
+            train=False,
+            resolution=VIDEO_RESOLUTION,
+            max_length=VAL_MAX_LENGTH,
+        ),
+        batch_size=VAL_BATCH_SIZE,
+        shuffle=False,
+        num_workers=4,
+    )
 
     best_psnr = -float("inf")
     best_ssim = -float("inf")
     step = 0
 
-    def log_pred_plot(
-        epoch_idx: int,
-        batch_idx: int,
-        soft_targets: torch.Tensor,
-        pred_probs: torch.Tensor,
-        snrs: torch.Tensor,
-    ):
-        with torch.no_grad():
-            targets_np = soft_targets.detach().cpu().numpy()
-            preds_np = pred_probs.detach().cpu().numpy()
-            snr_np = snrs.detach().cpu().numpy() if snrs is not None else None
-            bsz = targets_np.shape[0]
-            max_plot = min(bsz, PLOT_MAX_SAMPLES)
-            targets_np = targets_np[:max_plot]
-            preds_np = preds_np[:max_plot]
-            if snr_np is not None:
-                snr_np = snr_np[:max_plot]
-            bsz = max_plot
-            residual_np = preds_np - targets_np
-            pred_vmax = float(np.max(preds_np)) if preds_np.size else 1e-6
-            target_vmax = float(np.max(targets_np)) if targets_np.size else 1e-6
-            residual_vmax = float(np.max(np.abs(residual_np))) if residual_np.size else 1e-6
-            residual_vmax = max(residual_vmax, 1e-6)
-
-            fig, axes = plt.subplots(
-                3, bsz, figsize=(max(8, 4 * bsz), 6), squeeze=False
-            )
-            for i in range(bsz):
-                axes[0, i].imshow(
-                    preds_np[i][None, :],
-                    aspect="auto",
-                    cmap="inferno",
-                    vmin=0,
-                    vmax=pred_vmax,
-                )
-                axes[1, i].imshow(
-                    targets_np[i][None, :],
-                    aspect="auto",
-                    cmap="inferno",
-                    vmin=0,
-                    vmax=target_vmax,
-                )
-                axes[2, i].imshow(
-                    residual_np[i][None, :],
-                    aspect="auto",
-                    cmap="coolwarm",
-                    vmin=-residual_vmax,
-                    vmax=residual_vmax,
-                )
-                if i == 0:
-                    axes[0, i].set_ylabel("Pred")
-                    axes[1, i].set_ylabel("Target")
-                    axes[2, i].set_ylabel("Residual")
-                for row in range(3):
-                    axes[row, i].set_yticks([])
-                    axes[row, i].set_xticks([])
-                title = f"Ep {epoch_idx} B{batch_idx} SNR={snr_np[i]:.1f}dB" if snr_np is not None else f"Ep {epoch_idx} B{batch_idx}"
-                axes[0, i].set_title(title)
-            plt.tight_layout()
-            buf = io.BytesIO()
-            fig.savefig(buf, format="png", bbox_inches="tight")
-            plt.close(fig)
-            img_bytes = buf.getvalue()
-            img_tensor = torch.frombuffer(img_bytes, dtype=torch.uint8).clone()  # make writable
-            img = torchvision.io.decode_png(img_tensor)
-            writer.add_image("Train/TargetPredHeatmap", img, epoch_idx)
-
-    sample_shape = (BATCH_SIZE_TRAIN, *token_shape) if token_shape else (BATCH_SIZE_TRAIN,)
-    sample_indices = torch.randint(0, NUM_TOKENS, sample_shape, device=COMM_DEVICE)
+    sample_indices = torch.randint(0, NUM_TOKENS, (BATCH_SIZE_TRAIN,), device=COMM_DEVICE)
     trainer.comm.zero_grad()
-    out = trainer.forward_train(sample_indices, detach_reference=True)
-    out["loss"].backward()
+    loss, _, _, _, _, _, _ = trainer.forward_train(sample_indices, detach_reference=True)
+    loss.backward()
     grad_norm = trainer.comm.freq_real.grad.norm().item()
     print(f"Gradient norm on waveform bank: {grad_norm:.4f}")
 
@@ -970,50 +679,49 @@ def main(video_root: str, vqvae_ckpt: str, exp_prefix: str = "") -> None:
         trainer.train()
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
         epoch_records = []
-        for batch_idx, indices in enumerate(pbar):
+        for indices in pbar:
             optimizer.zero_grad()
-            out = trainer.forward_train(indices.to(COMM_DEVICE))
-            loss = out["loss"]
+            (
+                loss,
+                waveform_mse,
+                cos_sim,
+                token_acc,
+                token_l2,
+                channel_name,
+                channel_meta,
+            ) = trainer.forward_train(indices.to(COMM_DEVICE))
             loss.backward()
             optimizer.step()
             writer.add_scalar("Train/Loss", loss.item(), step)
-            writer.add_scalar("Train/WaveformMSE", out["mse"].item(), step)
-            writer.add_scalar("Train/CosSim", out["cos_sim"].item(), step)
-            writer.add_scalar("Train/TokenAcc", out["token_acc"].item(), step)
-            writer.add_scalar("Train/TopKAcc", out["topk_acc"].item(), step)
-            writer.add_scalar("Train/TokenL2", out["token_l2"].item(), step)
-            writer.add_scalar("Train/ScoresMean", out["scores_mean"].item(), step)
-            writer.add_scalar("Train/ScoresStd", out["scores_std"].item(), step)
-            writer.add_histogram("Train/PredHist", out["pred_hist"], step)
-            if batch_idx == 0:
-                # Log per-sample scatter of target vs pred for the first batch of each epoch
-                log_pred_plot(epoch, batch_idx, out["soft_targets"], out["pred_probs"], out["snrs"])
+            writer.add_scalar("Train/WaveformMSE", waveform_mse.item(), step)
+            writer.add_scalar("Train/CosSim", cos_sim.item(), step)
+            writer.add_scalar("Train/TokenAcc", token_acc.item(), step)
+            writer.add_scalar("Train/TokenL2", token_l2.item(), step)
             epoch_records.append(
                 (
                     step,
-                    out["channel_name"],
+                    channel_name,
                     loss.item(),
-                    out["channel_meta"]["snr_mean"],
-                    out["channel_meta"]["snr_min"],
-                    out["channel_meta"]["snr_max"],
-                    out["channel_meta"]["V0"],
-                    out["channel_meta"]["fc_hz"],
-                    out["channel_meta"]["fs_tau"],
-                    out["channel_meta"]["fs_t"],
-                    out["channel_meta"]["cp_length"],
-                    out["channel_meta"]["pilot_period"],
-                    out["channel_meta"]["oversample_q"],
-                    out["channel_meta"]["num_carriers"],
-                    out["channel_meta"]["num_ofdm_symbols"],
-                    out["channel_meta"]["frame_count"],
+                    channel_meta["snr_mean"],
+                    channel_meta["snr_min"],
+                    channel_meta["snr_max"],
+                    channel_meta["V0"],
+                    channel_meta["fc_hz"],
+                    channel_meta["fs_tau"],
+                    channel_meta["fs_t"],
+                    channel_meta["cp_length"],
+                    channel_meta["pilot_period"],
+                    channel_meta["oversample_q"],
+                    channel_meta["num_carriers"],
+                    channel_meta["num_ofdm_symbols"],
+                    channel_meta["frame_count"],
                 )
             )
             pbar.set_postfix(
                 loss=f"{loss.item():.4f}",
-                mse=f"{out['mse'].item():.4e}",
-                cos=f"{out['cos_sim'].item():.3f}",
-                acc=f"{out['token_acc'].item():.3f}",
-                topk=f"{out['topk_acc'].item():.3f}",
+                mse=f"{waveform_mse.item():.4e}",
+                cos=f"{cos_sim.item():.3f}",
+                acc=f"{token_acc.item():.3f}",
             )
             step += 1
 
@@ -1043,7 +751,7 @@ def main(video_root: str, vqvae_ckpt: str, exp_prefix: str = "") -> None:
             np.save(log_path, arr)
 
         if (epoch + 1) % VAL_FREQ == 0:
-            psnr, ssim = run_validation(epoch, trainer, vqvae_model, val_loader, writer)
+            psnr, ssim = run_validation(epoch, trainer, omni_model, val_loader, writer)
             if psnr > best_psnr:
                 best_psnr = psnr
                 torch.save(trainer.comm.state_dict(), osp.join(log_dir, "best_psnr_bank.pth"))
@@ -1062,13 +770,10 @@ def main(video_root: str, vqvae_ckpt: str, exp_prefix: str = "") -> None:
 
 if __name__ == "__main__":
     # Set your defaults here; adjust exp_prefix to tag runs.
-    waveform_len_list = [5, 7, 15, 10, 13, 30, 9]
-    for ele in waveform_len_list:
-        WAVEFORM_LEN = ele
-        VIDEO_DIR = os.environ.get("E2E_WAVE_VIDEO_TRAIN_DIR", "data/ProcessedDataset")
-        CKPT = os.environ.get(
-            "E2E_WAVE_VQVAE_CKPT",
-            "checkpoints/vqvae/vqvae_41616_model_best_128x128.pth_1024.tar",
-        )
-        EXP_PREFIX = f"cross-entropy_waveform_len_{WAVEFORM_LEN}_videogpt_4_16_16_1024_train_NCS1_eval_NCS1_temperature_0.01_top_5_video_training_res_128"  # e.g., "l2_sweep1"
-        main(VIDEO_DIR, CKPT, EXP_PREFIX)
+    VIDEO_DIR = os.environ.get("E2E_WAVE_VIDEO_TRAIN_DIR", "data/ProcessedDataset")
+    CKPT = os.environ.get(
+        "E2E_WAVE_OMNITOKENIZER_CKPT",
+        "checkpoints/omnitokenizer/imagenet_k600_fixed.ckpt",
+    )
+    EXP_PREFIX = "l2_similarity_PLL_AWGN_0_30db_testing(useless)"  # e.g., "l2_sweep1"
+    main(VIDEO_DIR, CKPT, EXP_PREFIX)

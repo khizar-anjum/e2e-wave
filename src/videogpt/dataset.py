@@ -25,7 +25,7 @@ except ImportError:
     DECORD_AVAILABLE = False
     print("Warning: decord not available, falling back to slower methods")
 
-DATA_DIR = os.environ.get("DATA_DIR", '/home/khizar/Datasets')
+DATA_DIR = os.environ.get("DATA_DIR", "data")
 
 
 def get_datasets(dataset, **dset_configs):

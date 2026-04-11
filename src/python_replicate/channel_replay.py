@@ -87,6 +87,7 @@ def replay_filter(
     x: torch.Tensor,
     fs_x: float,
     channel: ChannelSounding,
+    allow_reference: bool = False,
 ) -> torch.Tensor:
     """Vectorized replayfilter; optional reference check via VERIFY_REPLAY_FILTER=1."""
     device = x.device
@@ -117,7 +118,7 @@ def replay_filter(
     # The vectorized unfolding path materializes an (L x K) matrix, which can OOM for long signals.
     # Fall back to the reference implementation in that case.
     L_est = bb_resampled.numel()
-    if L_est * K > 5_000_000 and not DISABLE_REPLAY_FILTER_REFERENCE:
+    if L_est * K > 5_000_000 and allow_reference:
         return _replay_filter_reference(x, fs_x, channel)
 
     segments = padded.unfold(0, K, step=1)  # (L, K)

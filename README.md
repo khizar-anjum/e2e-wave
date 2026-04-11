@@ -40,11 +40,39 @@ e2e-wave/
 ├── checkpoints/
 │   ├── vqvae/               # VQ-VAE pretrained backbone (147 MB, Git LFS)
 │   └── trained_banks/       # Trained waveform banks for L ∈ {5,7,9,10,13,15,30}
+├── scripts/
+│   └── env.example.sh       # Copy → env.sh, edit, and `source env.sh`
 ├── docs/
 ├── DATA.md                  # Where to get the underlying datasets + channels
 ├── requirements.txt
 └── README.md
 ```
+
+## Configuration (`env.sh`)
+
+The scripts read paths from environment variables instead of hard-coded
+locations. Copy the example and point it at your dataset / checkpoint roots:
+
+```bash
+cp scripts/env.example.sh env.sh
+$EDITOR env.sh          # set UVE-38K, Watermark channels, etc.
+source env.sh
+```
+
+The variables used throughout the codebase:
+
+| Variable | Purpose |
+|---|---|
+| `E2E_WAVE_UVE_DIR` | UVE-38K 10-second clips root (contains `clear/`, `turbid/`) |
+| `E2E_WAVE_CHANNELS_DIR` | Watermark channels root (contains `NOF1/`, `NCS1/`, `BCH1/`, ...) |
+| `E2E_WAVE_VIDEO_TRAIN_DIR` | Training video corpus (for training a new VQ-VAE or wavebank) |
+| `E2E_WAVE_VQVAE_CKPT` | VQ-VAE `.pth.tar` checkpoint (repo ships one) |
+| `E2E_WAVE_TRAINED_BANKS_DIR` | Directory holding `cross-entropy_waveform_len_*` bank checkpoints |
+| `E2E_WAVE_RESULTS_DIR` | Where new eval CSVs are written (default: `results/wavebank`) |
+| `E2E_WAVE_RUNS_DIR` | Training run logs (default: `runs/watermark_videogpt`) |
+| `PYTHONPATH` | Must include `src/` and `eval/baselines/` (the example env.sh handles this) |
+
+`env.sh` is gitignored — keep your local paths out of the repo.
 
 ## Quickstart — regenerate the figures
 
@@ -54,10 +82,9 @@ that you need to rerun yourself — see [Reproducing the baselines](#reproducing
 below.
 
 ```bash
-# 1. Install deps
+# 1. Install deps and set up paths
 pip install -r requirements.txt
-pip install -e .     # not required; add src/ to PYTHONPATH instead
-export PYTHONPATH="$PWD/src:$PYTHONPATH"
+source env.sh   # see "Configuration" above
 
 # 2. L2 comparison (uses only E2E-WAVE data; reproducible out of the box)
 python figures/plot_l2_comparison.py \
@@ -75,44 +102,44 @@ python figures/plot_psnr_ssim.py \
 #    and the QPSK variants.
 
 # 4. BER comparison
-#    Step 4a: run BER sweeps on the Watermark channels (see below for
-#             prerequisites). ber_simo_combined.py prints BER per
-#             channel/modulation; redirect to a CSV matching the schema in
-#             figures/plot_ber_comparison.py's docstring.
+#    ber_simo_combined.py reads channel .mat files from $E2E_WAVE_CHANNELS_DIR
+#    and prints BER per channel/modulation; convert its stdout into a CSV
+#    matching the schema in figures/plot_ber_comparison.py's docstring.
 python figures/ber_simo_combined.py > ber_raw.txt
-# ... convert ber_raw.txt into ber_results.csv (channel,modulation,fec,snr_db,ber) ...
+# ... convert ber_raw.txt → ber_results.csv (channel,modulation,fec,snr_db,ber) ...
 python figures/plot_ber_comparison.py --csv ber_results.csv \
     --out figures/ber_comparison.pdf
 ```
 
 ## Reproducing the E2E-WAVE eval results
 
-If you want to regenerate the CSVs under `results/wavebank/` from scratch:
+If you want to regenerate the CSVs under `results/wavebank/` from scratch
+(`source env.sh` first):
 
 ```bash
-# Edit eval/e2e_wave/run_command.sh to point at your local paths:
-#   VIDEO_DIR    — UVE-38K 10-second clips (see DATA.md)
-#   VQVAE_CKPT   — checkpoints/vqvae/vqvae_41616_model_best_128x128.pth_1024.tar
-#   BANK_CKPT    — checkpoints/trained_banks/cross-entropy_waveform_len_${L}_.../best_ssim_bank.pth
-#   BASE_OUTPUT_DIR → results/wavebank
-bash eval/e2e_wave/run_command.sh
-bash eval/e2e_wave/run_eval_process_command.sh         # builds *_summary.csv files
-bash eval/e2e_wave/run_relevance_eval_command.sh       # builds *_l2_relevance.csv files
+bash eval/e2e_wave/run_command.sh                  # raw PSNR/SSIM CSVs
+bash eval/e2e_wave/run_eval_process_command.sh     # *_summary.csv files
+bash eval/e2e_wave/run_relevance_eval_command.sh   # *_l2_relevance.csv files
 ```
+
+All three scripts pick up `$E2E_WAVE_UVE_DIR`, `$E2E_WAVE_CHANNELS_DIR`,
+`$E2E_WAVE_VQVAE_CKPT`, `$E2E_WAVE_TRAINED_BANKS_DIR`, and write to
+`$E2E_WAVE_RESULTS_DIR`.
 
 ## Reproducing the baselines
 
 `eval/baselines/` contains the scripts used to produce the VQ-VAE+digital,
 SoftCast, and H.265 comparison curves. These are **not included as
-pre-computed CSVs** in this repo — rerun them against the UVE-38K test set
-(DATA.md) to obtain:
+pre-computed CSVs** — rerun them against the UVE-38K test set:
 
-- `results/vqvae/uve_eval_{NOF1,NCS1,BCH1}_dvbs2_ldpc_snr_sweep_.../sweep_summary.json`
-- `results/mpeg4_uve/uve_mpeg4_{NOF1,NCS1,BCH1}_.../sweep_summary.json`
-- `results/softcast_uve/uve_softcast_{NOF1,NCS1,BCH1}_.../sweep_summary.json`
+```bash
+bash eval/baselines/run_baselines.sh
+```
 
-Then rerun `figures/consolidate_runs.py` to pick them up into the manifest.
-`figures/plot_psnr_ssim.py` will include them automatically.
+This produces sweep runs under `results/vqvae/`, `results/mpeg4_uve/`, and
+`results/softcast_uve/`. Then rerun `figures/consolidate_runs.py` to fold
+them into the manifest — `figures/plot_psnr_ssim.py` will include them
+automatically on the next invocation.
 
 ## Training a new VQ-VAE backbone
 

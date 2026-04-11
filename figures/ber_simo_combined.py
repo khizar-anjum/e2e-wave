@@ -10,6 +10,7 @@ the training code.
 """
 
 import math
+import os
 import sys
 from pathlib import Path
 from typing import List, Tuple
@@ -221,7 +222,7 @@ def main() -> None:
     cp_lengths = [30, 60]
     pilot_periods = [4, 2]
     cfg = FramePrepConfig(sync_length=1023, sc_length=256)
-    channel_dir = Path("input/channels")
+    channel_dir = Path(os.environ.get("E2E_WAVE_CHANNELS_DIR", "data/channels"))
     mats: List[Tuple[str, List[Path]]] = []
     for ch_dir in sorted(channel_dir.iterdir()):
         if not ch_dir.is_dir():

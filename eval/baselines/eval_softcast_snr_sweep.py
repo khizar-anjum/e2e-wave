@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import csv
+import os
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -94,7 +95,7 @@ def parse_args() -> EvalConfig:
     parser.add_argument(
         "--channel-base",
         type=str,
-        default="/home/khizar/Temp/python_watermark/input/channels",
+        default=os.environ.get("E2E_WAVE_CHANNELS_DIR", "data/channels"),
         help="Base directory containing channel .mat files",
     )
     parser.add_argument(

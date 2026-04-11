@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import sys
 from pathlib import Path
 from typing import Dict, Tuple
@@ -17,10 +18,14 @@ from python_replicate.ofdm_mapper import OFDMConfig
 from python_replicate.receiver_processing import ReceiverParams, extract_ofdm_symbols_with_ce
 from python_replicate.waveform_bank import ComplexWaveformSystem
 
-CHANNEL_PATH = Path("/home/cps-tingcong/Documents/GitHub/wave/WaterMark/Watermark/input/channels/NOF1/mat/NOF1_001.mat")
+CHANNEL_PATH = Path(
+    os.environ.get("E2E_WAVE_CHANNELS_DIR", "data/channels")
+) / "NOF1" / "mat" / "NOF1_001.mat"
 FRAME_CONFIG = FramePrepConfig()
 OFDM_CFG = OFDMConfig()
-RESULT_PATH = Path("/home/cps-tingcong/Documents/GitHub/wave/WaterMark/Watermark/python_replicate/output/channel_estimator_validation.pt")
+RESULT_PATH = Path(
+    os.environ.get("E2E_WAVE_OUT_DIR", "output")
+) / "channel_estimator_validation.pt"
 
 def make_waveform_bank(kind: str) -> ComplexWaveformSystem:
     kind = kind.upper()

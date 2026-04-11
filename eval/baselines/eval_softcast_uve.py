@@ -26,6 +26,7 @@ Usage:
 
 import argparse
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -49,7 +50,7 @@ from python_replicate.softcast_pipeline import simulate_softcast_channel
 
 
 # Default UVE38K dataset path
-DEFAULT_UVE_PATH = "/home/khizar/Datasets/UVE38K/raw/10_sec_clips"
+DEFAULT_UVE_PATH = os.environ.get("E2E_WAVE_UVE_DIR", "data/uve38k/10_sec_clips")
 
 # Video extensions
 VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v'}

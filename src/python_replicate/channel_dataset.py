@@ -164,6 +164,11 @@ def _flatten_data_matrix(data_matrix: torch.Tensor) -> torch.Tensor:
 
 def _resample_complex(x: torch.Tensor, scale: float) -> torch.Tensor:
     """Resample 1D complex tensor by scale factor using linear interpolation."""
+    # Convert scale to Python float if it's a tensor
+    if hasattr(scale, 'item'):
+        scale = float(scale.item())
+    else:
+        scale = float(scale)
     if scale <= 0:
         return x
     target_len = max(1, int(round(x.numel() * scale)))
@@ -604,6 +609,20 @@ def estimate_required_samples(
     return per_frame * sequence_length + sync_train_margin
 
 
+class _LazyPipelineDict(dict):
+    """Dict that lazily loads pipelines on first access."""
+
+    def __init__(self, collection: "ChannelCollection"):
+        super().__init__()
+        self._collection = collection
+
+    def __getitem__(self, channel_name: str):
+        pipeline = super().get(channel_name)
+        if pipeline is None and channel_name in self._collection._paths:
+            pipeline = self._collection.get_pipeline(channel_name)
+        return pipeline
+
+
 class ChannelCollection:
     """Maintains separate channel pipelines for train/eval splits."""
 
@@ -626,7 +645,7 @@ class ChannelCollection:
         self._paths = {}
         self._fixed_paths = {}
         self._pipeline_cache = {}
-        self.pipelines = {}
+        self.pipelines = _LazyPipelineDict(self)
         for name in channel_names:
             mat_dir = base_dir / name / "mat"
             paths = sorted(mat_dir.glob(f"{name}_*.mat"))
@@ -640,16 +659,6 @@ class ChannelCollection:
             if recording_mode == "fixed":
                 idx = self._rng.randrange(len(paths))
                 self._fixed_paths[name] = paths[idx]
-            # Keep a default pipeline for compatibility.
-            default_path = paths[0]
-            default_pipeline = ChannelSimulationPipeline(
-                default_path,
-                frame_config=frame_config,
-                ofdm_config=ofdm_config,
-                device=device,
-            )
-            self._pipeline_cache[(name, default_path)] = default_pipeline
-            self.pipelines[name] = default_pipeline
         self.names = list(channel_names)
 
     def _select_path(self, channel_name: str) -> Path:
@@ -682,6 +691,9 @@ class ChannelCollection:
                 device=self.device,
             )
             self._pipeline_cache[key] = pipeline
+            # Set default pipeline for backwards compatibility
+            if self.pipelines.get(channel_name) is None:
+                self.pipelines[channel_name] = pipeline
         return pipeline
 
     def simulate(
@@ -691,9 +703,9 @@ class ChannelCollection:
         frame_tokens: Sequence[torch.Tensor],
         snr_schedule: Union[float, Sequence[float]],
         generator: Optional[torch.Generator] = None,
-            add_awgn: bool = True,
-            flat_channel: bool = False,
-        ) -> SimulationResult:
+        add_awgn: bool = True,
+        flat_channel: bool = False,
+    ) -> SimulationResult:
         pipeline = self.get_pipeline(channel_name)
         return pipeline.simulate_video(
             waveform_bank,

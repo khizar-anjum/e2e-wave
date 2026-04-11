@@ -49,7 +49,7 @@ from python_replicate.mpeg4_transmission.metrics import img_psnr, img_ssim
 
 
 # Default UVE38K dataset path
-DEFAULT_UVE_PATH = "/home/khizar/Datasets/UVE38K/raw/10_sec_clips"
+DEFAULT_UVE_PATH = os.environ.get("E2E_WAVE_UVE_DIR", "data/uve38k/10_sec_clips")
 
 # Video extensions
 VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v'}

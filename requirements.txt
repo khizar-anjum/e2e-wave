@@ -21,6 +21,7 @@ lpips
 numpy==1.26.2
 scipy
 opencv-python
+decord
 
 # Plotting / data handling (figures/*.py)
 matplotlib
