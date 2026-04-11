@@ -216,4 +216,7 @@ and the UVE-38K video corpus: <https://github.com/TrentQiQ/UVE-38K>.
 
 ## License
 
-See `LICENSE` (to be added before publication).
+This repository is released under the **Apache License 2.0** — see
+[`LICENSE`](LICENSE) for the full text and [`NOTICE`](NOTICE) for the
+attribution of third-party components vendored under `src/` and `eval/`
+(notably VideoGPT, which is MIT-licensed and compatible with Apache-2.0).

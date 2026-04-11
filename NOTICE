@@ -1,0 +1,51 @@
+E2E-WAVE
+Copyright 2026 Khizar Anjum, Tingcong Jiang, Dario Pompili
+(Rutgers University)
+
+This product includes software developed as part of the E2E-WAVE research
+project, released under the Apache License 2.0 (see LICENSE).
+
+Third-party components redistributed under src/ and eval/ retain their
+original licenses:
+
+1. VideoGPT (src/videogpt/)
+   Copyright (c) 2021 Wilson Yan, Yunzhi Zhang, Pieter Abbeel, Aravind Srinivas
+   Upstream: https://github.com/wilson1yan/VideoGPT
+   License: MIT
+
+   Derived from the "VideoGPT-Paper" variant of the VideoGPT code base.
+   The vendored copy has the I3D/FVD pretrained weights removed and its
+   default data path rewritten to use the E2E_WAVE_* environment variables.
+
+2. python_replicate (src/python_replicate/) and baseline eval scripts
+   (eval/baselines/eval_vqvae_uve.py, eval_mpeg4_uve.py, eval_softcast_uve.py,
+   eval_softcast_snr_sweep.py, train_wave_bank_watermark_replicate.py,
+   softcast.py) as well as the BER measurement tooling
+   (figures/ber_simo_combined.py, figures/ber_kau1.py).
+
+   These files originate from the internal "python_watermark" research
+   code base maintained by the E2E-WAVE authors and their collaborators,
+   which in turn builds on and redistributes portions of:
+
+     OmniTokenizer  (MIT, Copyright (c) 2024 FoundationVision)
+                    https://github.com/FoundationVision/OmniTokenizer
+     py_aff3ct      (MIT, 2021, used only when the LDPC FEC baselines
+                    are exercised via src/python_replicate/fec_codec.py
+                    and aff3ct_codecs.py)
+
+   Hardcoded paths have been replaced with E2E_WAVE_* environment
+   variables; no other modifications were made to the redistributed code.
+
+3. Plotting utilities (figures/plot_psnr_ssim.py, figures/consolidate_runs.py)
+   originate from the same python_watermark code base. Their new companion
+   scripts (figures/plot_l2_comparison.py, figures/plot_ber_comparison.py)
+   were written fresh for this repository and are covered by the top-level
+   Apache-2.0 license.
+
+Datasets and channel recordings referenced in DATA.md are distributed
+separately under their own terms:
+
+  - UVE-38K:  https://github.com/TrentQiQ/UVE-38K
+  - Watermark benchmark (van Walree et al., 2017)
+
+Neither dataset is redistributed here.
