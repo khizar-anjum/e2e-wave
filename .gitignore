@@ -1,0 +1,31 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.ipynb_checkpoints/
+.DS_Store
+
+# Local run artifacts
+runs/
+output/
+wandb/
+*.log
+
+# Data not redistributed here (see DATA.md for download links)
+data/
+datasets/
+channels_raw/
+10_sec_clips/
+uve_38k/
+
+# Evaluation artifacts beyond the shipped CSVs
+results/baselines/
+videos/
+
+# Large generated media
+*.mp4
+*.avi
+*.mov
+
+# Keep the committed checkpoint dirs but ignore ad-hoc ones
+runs_backup/

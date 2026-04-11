@@ -1,0 +1,31 @@
+# Core DL
+torch>=2.0
+torchvision
+torchaudio
+torchmetrics
+
+# Training utilities
+einops
+ftfy
+h5py
+imageio
+pytorch-lightning==1.5.4
+regex
+scikit-video
+tqdm
+fairscale
+lightning
+diffusers
+accelerate
+lpips
+numpy==1.26.2
+scipy
+opencv-python
+
+# Plotting / data handling (figures/*.py)
+matplotlib
+pandas
+
+# Channel replay / OFDM (python_replicate)
+# Reads Watermark .mat files
+h5py
