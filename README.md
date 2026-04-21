@@ -1,5 +1,7 @@
 # E2E-WAVE
 
+**[\[Paper (arXiv)\]](https://arxiv.org/abs/2604.17047)**
+
 Reproducibility bundle for **E2E-WAVE: End-to-End Waveform Adaptive Encoding for
 Underwater Video Multicasting** (SECON 2026).
 
@@ -186,13 +188,14 @@ If you use this code, the trained waveform banks, or the eval results in
 your own work, please cite:
 
 ```bibtex
-@inproceedings{e2ewave2026,
+@inproceedings{anjum2026e2ewave,
   title     = {E2E-WAVE: End-to-End Waveform Adaptive Encoding for
                Underwater Video Multicasting},
   author    = {Anjum, Khizar and Jiang, Tingcong and Pompili, Dario},
   booktitle = {Proceedings of the 23rd IEEE International Conference on
                Sensing, Communication, and Networking (SECON)},
-  year      = {2026}
+  year      = {2026},
+  url       = {https://arxiv.org/abs/2604.17047}
 }
 ```
 
