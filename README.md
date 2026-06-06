@@ -102,13 +102,14 @@ python figures/plot_psnr_ssim.py \
 #  → figures/psnr_clear_bpsk.pdf, psnr_turbid_bpsk.pdf, ssim_*,
 #    and the QPSK variants.
 
-# 4. BER comparison
+# 4. BER comparison (uncoded; works with just requirements.txt)
 #    Replay an OFDM frame through the Watermark channels and report BER per
 #    channel/modulation. --snr sweeps a comma-separated Eb/N0 list (omit it for a
-#    single no-AWGN point); --fec adds hard-decision LDPC curves; --csv writes the
-#    file plot_ber_comparison.py reads.
+#    single no-AWGN point); --csv writes the file plot_ber_comparison.py reads.
 python figures/ofdm_ber_regression.py --frames 50 \
-    --snr 0,5,10,15,20,25,30 --fec none,ldpc_r73,ldpc_r33 --csv ber_results.csv
+    --snr 0,5,10,15,20,25,30 --csv ber_results.csv
+#    To also draw the LDPC FEC curves, add (needs py_aff3ct -- see below):
+#      --fec none,ldpc_r73,ldpc_r33
 python figures/plot_ber_comparison.py --csv ber_results.csv \
     --out figures/ber_comparison.pdf
 ```
