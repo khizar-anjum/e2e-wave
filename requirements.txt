@@ -30,3 +30,7 @@ pandas
 # Channel replay / OFDM (python_replicate)
 # Reads Watermark .mat files
 h5py
+
+# Optional: LDPC FEC curves in figures/ofdm_ber_regression.py (--fec ldpc_*).
+# py_aff3ct is NOT on PyPI -- build from source. See the "Optional: LDPC FEC via
+# py_aff3ct" section in README.md (https://github.com/aff3ct/py_aff3ct).

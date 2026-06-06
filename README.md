@@ -34,8 +34,7 @@ e2e-wave/
 │   ├── plot_psnr_ssim.py        # → psnr_bpsk.pdf, ssim_bpsk.pdf, psnr_qpsk.pdf, ssim_qpsk.pdf
 │   ├── plot_l2_comparison.py    # → l2_comparison_raw.pdf
 │   ├── plot_ber_comparison.py   # → ber_comparison.pdf
-│   ├── ber_simo_combined.py     # BER measurement (SIMO OFDM replay)
-│   ├── ber_kau1.py              # BER measurement (KAU1 SISO variant)
+│   ├── ofdm_ber_regression.py   # BER measurement (sync-based receiver, SISO + SIMO MRC)
 │   └── consolidate_runs.py      # Builds results/plots/manifest.json
 ├── results/
 │   └── wavebank/            # E2E-WAVE eval CSVs (shipped; see DATA.md to regenerate)
@@ -103,15 +102,52 @@ python figures/plot_psnr_ssim.py \
 #  → figures/psnr_clear_bpsk.pdf, psnr_turbid_bpsk.pdf, ssim_*,
 #    and the QPSK variants.
 
-# 4. BER comparison
-#    ber_simo_combined.py reads channel .mat files from $E2E_WAVE_CHANNELS_DIR
-#    and prints BER per channel/modulation; convert its stdout into a CSV
-#    matching the schema in figures/plot_ber_comparison.py's docstring.
-python figures/ber_simo_combined.py > ber_raw.txt
-# ... convert ber_raw.txt → ber_results.csv (channel,modulation,fec,snr_db,ber) ...
+# 4. BER comparison (uncoded; works with just requirements.txt)
+#    Replay an OFDM frame through the Watermark channels and report BER per
+#    channel/modulation. --snr sweeps a comma-separated Eb/N0 list (omit it for a
+#    single no-AWGN point); --csv writes the file plot_ber_comparison.py reads.
+python figures/ofdm_ber_regression.py --frames 50 \
+    --snr 0,5,10,15,20,25,30 --csv ber_results.csv
+#    To also draw the LDPC FEC curves, add (needs py_aff3ct -- see below):
+#      --fec none,ldpc_r73,ldpc_r33
 python figures/plot_ber_comparison.py --csv ber_results.csv \
     --out figures/ber_comparison.pdf
 ```
+
+`ofdm_ber_regression.py` is a sync-based OFDM receiver with pilot channel
+estimation: it runs NOF1/NCS1 as SISO and maximal-ratio-combines the hydrophones
+for the SIMO channels (BCH1, KAU1, KAU2). `--snr` adds AWGN; `--fec` adds
+hard-decision LDPC curves (DVB-S2 rates 0.73 / 0.33), modeling the receiver's
+uncoded bit errors as a BSC and decoding over it.
+
+### Optional: LDPC FEC via py_aff3ct
+
+The `--fec ldpc_r73,ldpc_r33` curves require [`py_aff3ct`](https://github.com/aff3ct/py_aff3ct)
+(MIT), the Python bindings for the AFF3CT error-correction toolbox. It is **not**
+on PyPI and is **not** in `requirements.txt` — everything else (uncoded BER, the
+`--snr` sweep, SIMO MRC) works without it; only the LDPC curves need it.
+
+It builds from source (Linux/macOS; needs a C++ compiler, CMake, and Doxygen):
+
+```bash
+sudo apt install python3 python3-pip doxygen cmake g++   # prerequisites
+git clone --recursive https://github.com/aff3ct/py_aff3ct.git
+cd py_aff3ct
+git submodule update --init --recursive
+# 1) build the AFF3CT C++ library
+cd lib/aff3ct && mkdir -p build && cd build
+cmake .. -G"Unix Makefiles" -DCMAKE_BUILD_TYPE=Release \
+  -DAFF3CT_COMPILE_EXE=OFF -DAFF3CT_COMPILE_STATIC_LIB=ON -DAFF3CT_COMPILE_SHARED_LIB=ON
+make -j4 && cd ../../..
+# 2) build the bindings
+mkdir -p cmake/Modules && cp lib/aff3ct/build/lib/cmake/aff3ct-*/* cmake/Modules
+mkdir -p build && cd build && ../configure.py --verbose
+cmake .. -G"Unix Makefiles" -DCMAKE_BUILD_TYPE=Release && make -j4
+# the result is build/lib/py_aff3ct*.so -- put it on PYTHONPATH
+```
+
+See the upstream README for the authoritative, platform-specific steps. Once
+`python -c "import py_aff3ct"` succeeds, `--fec` works.
 
 ## Reproducing the E2E-WAVE eval results
 
@@ -178,7 +214,7 @@ seven wavelengths reported in the paper are already under
 |---|---|---|
 | `psnr_bpsk.pdf`, `ssim_bpsk.pdf`, `psnr_qpsk.pdf`, `ssim_qpsk.pdf` | `figures/plot_psnr_ssim.py` | Regenerates fully if baselines are rerun; E2E-WAVE curves work out of the box |
 | `l2_comparison_raw.pdf` | `figures/plot_l2_comparison.py` | Works out of the box (E2E-WAVE only); digital baselines TODO if needed |
-| `ber_comparison.pdf` | `figures/plot_ber_comparison.py` + `figures/ber_simo_combined.py` | Requires Watermark channel .mat files (see DATA.md) |
+| `ber_comparison.pdf` | `figures/plot_ber_comparison.py` + `figures/ofdm_ber_regression.py` | Requires Watermark channel .mat files (see DATA.md); LDPC FEC curves need py_aff3ct (see BER section) |
 | `qual_eval.pdf` | — | Out of scope — requires raw reconstructed videos, not staged here |
 | `E2E_Wave_Figure2.pdf`, `overview.pdf`, architecture/pipeline diagrams | — | Hand-drawn, not produced by this repo |
 
