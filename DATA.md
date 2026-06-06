@@ -39,8 +39,8 @@ We use five channels: `NOF1`, `NCS1`, `BCH1`, `KAU1`, `KAU2`.
   └── KAU2/ ...
   ```
 - **Size:** ~750 MB total.
-- **Used by:** `eval/e2e_wave/*.py`, `figures/ber_simo_combined.py`,
-  `figures/ber_kau1.py`, `training/train_wave_bank_watermark_videogpt_full.py`.
+- **Used by:** `eval/e2e_wave/*.py`, `figures/ofdm_ber_regression.py`,
+  `training/train_wave_bank_watermark_videogpt_full.py`.
 
 Point the eval / training scripts at the root of this tree via the
 `--channel` argument (the scripts currently hard-code the base path — see

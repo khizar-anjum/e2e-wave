@@ -122,6 +122,20 @@ def resample_poly_torch(
     if up == down == 1:
         return x.clone()
 
+    # Near-unity ratios with large denominators (e.g. fine Doppler resampling
+    # like 999/1000) force the polyphase path below to materialize an
+    # `up * len(x)` intermediate array, which OOMs for long packets. scipy's
+    # resample_poly uses the identical filter (firwin, Kaiser beta=5.0, taps =
+    # 2*10*max(up,down)+1, scaled by `up`) but evaluates it polyphase without the
+    # giant intermediate, so delegate to it in that regime. Output length
+    # ceil(len*up/down) matches the torch path exactly.
+    if up * x.numel() > 20_000_000:
+        from scipy.signal import resample_poly as _scipy_resample_poly
+
+        arr = x.detach().cpu().numpy()
+        y_np = _scipy_resample_poly(arr, up, down, window=("kaiser", beta))
+        return torch.as_tensor(y_np, dtype=x.dtype, device=x.device)
+
     work = x.clone()
     if not work.is_complex():
         work = work.to(torch.float64)

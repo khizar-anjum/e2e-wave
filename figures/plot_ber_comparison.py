@@ -3,9 +3,9 @@
 
 Reproduces figures/ber_comparison.pdf from the E2E-WAVE paper.
 
-This script only handles plotting. The raw BER numbers have to come from
-ber_simo_combined.py / ber_kau1.py (which run OFDM replay over the
-Watermark .mat channel files) and be consolidated into a CSV with columns:
+This script only handles plotting. The raw BER numbers come from
+ofdm_ber_regression.py (which runs OFDM replay over the Watermark .mat
+channel files; pass --csv to write the file directly) with columns:
 
     channel,modulation,fec,snr_db,ber
 
