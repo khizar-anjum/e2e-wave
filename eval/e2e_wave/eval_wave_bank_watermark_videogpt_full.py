@@ -304,8 +304,8 @@ def compute_relevance_matrix(codebook: torch.Tensor) -> torch.Tensor:
 
 
 def make_grid_video(real: torch.Tensor, recon: torch.Tensor) -> torch.Tensor:
-    real = (real.detach().cpu() + 1) * 0.5
-    recon = (recon.detach().cpu() + 1) * 0.5
+    real = real.detach().cpu() + 0.5  # frames are in [-0.5, 0.5] -> [0, 1]
+    recon = recon.detach().cpu() + 0.5
     real = real.clamp(0, 1)
     recon = recon.clamp(0, 1)
     combined = torch.cat([real, recon], dim=4)
@@ -316,9 +316,9 @@ def make_grid_video(real: torch.Tensor, recon: torch.Tensor) -> torch.Tensor:
 def make_grid_video_triplet(
     real: torch.Tensor, recon: torch.Tensor, perfect: torch.Tensor
 ) -> torch.Tensor:
-    real = (real.detach().cpu() + 1) * 0.5
-    recon = (recon.detach().cpu() + 1) * 0.5
-    perfect = (perfect.detach().cpu() + 1) * 0.5
+    real = real.detach().cpu() + 0.5  # frames are in [-0.5, 0.5] -> [0, 1]
+    recon = recon.detach().cpu() + 0.5
+    perfect = perfect.detach().cpu() + 0.5
     real = real.clamp(0, 1)
     recon = recon.clamp(0, 1)
     perfect = perfect.clamp(0, 1)
@@ -711,7 +711,7 @@ def _psnr_from_mse(mse: torch.Tensor, data_range: float = 1.0) -> torch.Tensor:
 
 
 def _tensor_to_video_uint8(video_bcthw: torch.Tensor) -> torch.Tensor:
-    video = (video_bcthw.detach().cpu() + 1) * 0.5
+    video = video_bcthw.detach().cpu() + 0.5  # frames are in [-0.5, 0.5] -> [0, 1]
     video = video.clamp(0, 1)
     video = video.squeeze(0).permute(1, 2, 3, 0).contiguous()
     return (video * 255.0).round().to(torch.uint8)
@@ -800,8 +800,11 @@ def evaluate_snr_sweep(
                 recon = vqvae_model.decode(pred_indices.unsqueeze(-1))
                 real = video[b : b + 1]
 
-                real_01 = ((real + 1) * 0.5).clamp(0, 1)
-                recon_01 = ((recon + 1) * 0.5).clamp(0, 1)
+                # Frames are normalized to [-0.5, 0.5] (see preprocess()), so the
+                # correct de-normalization to [0, 1] is (x + 0.5), NOT (x + 1) * 0.5
+                # (the latter assumes [-1, 1] and halves the error, inflating PSNR ~6 dB).
+                real_01 = (real + 0.5).clamp(0, 1)
+                recon_01 = (recon + 0.5).clamp(0, 1)
                 real_frames = real_01.permute(0, 2, 1, 3, 4).reshape(
                     -1, real_01.shape[1], real_01.shape[3], real_01.shape[4]
                 )
